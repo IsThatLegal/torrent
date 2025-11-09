@@ -57,8 +57,9 @@ class SecureTorrentGUI:
 
         # Settings (defaults, will be overwritten by load_settings)
         self.download_path = os.path.expanduser("~/Downloads/torrents")
-        self.max_download_rate = 0
-        self.max_upload_rate = 0
+        # Reasonable defaults: 1 MB/s download, 200 KB/s upload (in bytes/sec)
+        self.max_download_rate = 1000 * 1000  # 1000 KB/s = 1 MB/s
+        self.max_upload_rate = 200 * 1000     # 200 KB/s
 
         # Privacy settings
         self.encryption_enabled = True
@@ -417,6 +418,12 @@ class SecureTorrentGUI:
                               relief=tk.SUNKEN, padding=5)
         status_bar.grid(row=2, column=0, sticky=(tk.W, tk.E), pady=(10, 0))
 
+        # Bandwidth status bar
+        self.bandwidth_var = tk.StringVar(value="Bandwidth: ↓ 0 KB/s  ↑ 0 KB/s")
+        bandwidth_bar = ttk.Label(main_frame, textvariable=self.bandwidth_var,
+                                 relief=tk.SUNKEN, padding=5, font=('TkDefaultFont', 9, 'bold'))
+        bandwidth_bar.grid(row=3, column=0, sticky=(tk.W, tk.E), pady=(5, 0))
+
         # Apply initial theme
         self.apply_theme()
 
@@ -762,6 +769,24 @@ class SecureTorrentGUI:
         settings['enable_lsd'] = True
         settings['enable_upnp'] = True
         settings['enable_natpmp'] = True
+
+        # Bandwidth limits (apply saved or default settings)
+        settings['download_rate_limit'] = self.max_download_rate
+        settings['upload_rate_limit'] = self.max_upload_rate
+
+        # Connection limits to prevent bandwidth hogging
+        settings['connections_limit'] = 200        # Max total connections
+        settings['active_downloads'] = 3           # Max active downloads at once
+        settings['active_seeds'] = 5               # Max active seeds at once
+        settings['active_limit'] = 8               # Max active torrents total
+
+        # Per-torrent connection limits
+        settings['unchoke_slots_limit'] = 8        # Max upload slots per torrent
+        settings['max_peerlist_size'] = 1000       # Limit peer list size
+
+        # Rate-based unchoking for smoother bandwidth usage
+        settings['seed_choking_algorithm'] = lt.seed_choking_algorithm.fastest_upload
+        settings['choking_algorithm'] = lt.choking_algorithm.rate_based
 
         # Privacy: Enable encryption
         if self.encryption_enabled:
@@ -1472,6 +1497,27 @@ class SecureTorrentGUI:
                     self.tree.item(torrent['item_id'], values=(
                         name, size, progress, speed, peers, status
                     ))
+
+                # Update total session bandwidth
+                try:
+                    status = self.ses.status()
+                    total_download = status.download_rate / 1000  # Convert to KB/s
+                    total_upload = status.upload_rate / 1000      # Convert to KB/s
+
+                    # Show limits if they exist
+                    dl_limit_text = ""
+                    ul_limit_text = ""
+                    if self.max_download_rate > 0:
+                        dl_limit = self.max_download_rate / 1000
+                        dl_limit_text = f" / {dl_limit:.0f}"
+                    if self.max_upload_rate > 0:
+                        ul_limit = self.max_upload_rate / 1000
+                        ul_limit_text = f" / {ul_limit:.0f}"
+
+                    bandwidth_text = f"Bandwidth: ↓ {total_download:.0f}{dl_limit_text} KB/s  ↑ {total_upload:.0f}{ul_limit_text} KB/s"
+                    self.bandwidth_var.set(bandwidth_text)
+                except Exception as bw_error:
+                    pass  # Silently ignore bandwidth update errors
 
             except Exception as e:
                 print(f"Update error: {e}")

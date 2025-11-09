@@ -420,7 +420,7 @@ class SecureTorrentGUI:
         status_bar.grid(row=2, column=0, sticky=(tk.W, tk.E), pady=(10, 0))
 
         # Bandwidth status bar
-        self.bandwidth_var = tk.StringVar(value="Bandwidth: ↓ 0 KB/s  ↑ 0 KB/s")
+        self.bandwidth_var = tk.StringVar(value="Speed: ↓ 0 KB/s  ↑ 0 KB/s  |  Session: ↓ 0 B  ↑ 0 B  Ratio: 0.00")
         bandwidth_bar = ttk.Label(main_frame, textvariable=self.bandwidth_var,
                                  relief=tk.SUNKEN, padding=5, font=('TkDefaultFont', 9, 'bold'))
         bandwidth_bar.grid(row=3, column=0, sticky=(tk.W, tk.E), pady=(5, 0))
@@ -428,8 +428,76 @@ class SecureTorrentGUI:
         # Apply initial theme
         self.apply_theme()
 
+        # Setup menu bar
+        self.setup_menu_bar()
+
         # Setup keyboard shortcuts
         self.setup_keyboard_shortcuts()
+
+    def setup_menu_bar(self):
+        """Setup menu bar with Help menu"""
+        menubar = tk.Menu(self.root)
+        self.root.config(menu=menubar)
+
+        # Help menu
+        help_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="Help", menu=help_menu)
+        help_menu.add_command(label="⌨️ Keyboard Shortcuts", command=self.show_shortcuts)
+        help_menu.add_separator()
+        help_menu.add_command(label="📖 About", command=self.show_about)
+
+    def show_shortcuts(self):
+        """Show keyboard shortcuts dialog"""
+        shortcuts = """
+═══════════════════════════════════════════════
+         KEYBOARD SHORTCUTS
+═══════════════════════════════════════════════
+
+GLOBAL:
+  Ctrl+O        Open .torrent file
+  Ctrl+M        Focus magnet link entry
+  Ctrl+S        Apply bandwidth settings
+  Ctrl+Q        Quit application
+
+DOWNLOADS TAB:
+  Space         Pause/Resume selected torrent
+  Delete        Remove selected torrent(s)
+  Ctrl+P        Pause selected torrent(s)
+  Ctrl+R        Resume selected torrent(s)
+  Ctrl+A        Select all torrents
+  Ctrl+F        Open folder for selected torrent
+
+TIPS:
+  • Right-click torrents for quick actions
+  • Click column headers to sort
+  • Use Space for quick pause/resume toggle
+
+═══════════════════════════════════════════════
+"""
+        messagebox.showinfo("Keyboard Shortcuts", shortcuts)
+
+    def show_about(self):
+        """Show about dialog"""
+        about_text = """
+Secure Torrent Downloader
+Version 1.0
+
+A privacy-focused BitTorrent client with:
+• Bandwidth management
+• Single-instance design
+• Pause/Resume functionality
+• Keyboard shortcuts
+• Session statistics
+• And more!
+
+Built with libtorrent and Python.
+
+🔒 Always use a VPN when torrenting.
+
+Created with Claude Code
+https://github.com/IsThatLegal/torrent
+"""
+        messagebox.showinfo("About Secure Torrent Downloader", about_text)
 
     def setup_keyboard_shortcuts(self):
         """Setup keyboard shortcuts"""
@@ -735,8 +803,13 @@ class SecureTorrentGUI:
         columns = ('Name', 'Size', 'Progress', 'Speed', 'ETA', 'Peers', 'Status')
         self.tree = ttk.Treeview(downloads_frame, columns=columns, show='headings', height=12)
 
+        # Make columns sortable
+        self.downloads_sort_column = None
+        self.downloads_sort_reverse = False
+
         for col in columns:
-            self.tree.heading(col, text=col)
+            self.tree.heading(col, text=col,
+                            command=lambda c=col: self.sort_downloads(c))
 
         self.tree.column('Name', width=250)
         self.tree.column('Size', width=80)
@@ -1580,12 +1653,102 @@ class SecureTorrentGUI:
                 except Exception as e:
                     messagebox.showerror("Error", f"Failed to open folder:\n{e}")
 
+    def sort_downloads(self, column):
+        """Sort downloads by column"""
+        # Toggle sort direction if clicking same column
+        if self.downloads_sort_column == column:
+            self.downloads_sort_reverse = not self.downloads_sort_reverse
+        else:
+            self.downloads_sort_column = column
+            self.downloads_sort_reverse = False
+
+        # Get all items with their values
+        items = []
+        for item_id in self.tree.get_children(''):
+            values = self.tree.item(item_id)['values']
+            items.append((item_id, values))
+
+        # Determine column index
+        columns = ('Name', 'Size', 'Progress', 'Speed', 'ETA', 'Peers', 'Status')
+        col_index = columns.index(column)
+
+        # Sort items
+        try:
+            # For progress column, sort numerically
+            if column == 'Progress':
+                items.sort(key=lambda x: float(x[1][col_index].rstrip('%')),
+                          reverse=self.downloads_sort_reverse)
+            # For peers column, sort numerically
+            elif column == 'Peers':
+                items.sort(key=lambda x: int(x[1][col_index]),
+                          reverse=self.downloads_sort_reverse)
+            # For other columns, sort alphabetically
+            else:
+                items.sort(key=lambda x: str(x[1][col_index]),
+                          reverse=self.downloads_sort_reverse)
+        except:
+            # Fallback to string sort if parsing fails
+            items.sort(key=lambda x: str(x[1][col_index]),
+                      reverse=self.downloads_sort_reverse)
+
+        # Rearrange items in tree
+        for index, (item_id, values) in enumerate(items):
+            self.tree.move(item_id, '', index)
+
+        # Update column header to show sort direction
+        for col in columns:
+            if col == column:
+                arrow = ' ▼' if self.downloads_sort_reverse else ' ▲'
+                self.tree.heading(col, text=col + arrow)
+            else:
+                self.tree.heading(col, text=col)
+
+    def open_file(self):
+        """Open downloaded file (for completed torrents)"""
+        selection = self.tree.selection()
+        if not selection:
+            messagebox.showwarning("Warning", "Please select a torrent")
+            return
+
+        with self.torrents_lock:
+            torrent = self.get_torrent_by_item_id(selection[0])
+            if torrent:
+                handle = torrent['handle']
+                status = handle.status()
+
+                # Check if download is complete
+                if not status.is_seeding and status.progress < 1.0:
+                    messagebox.showinfo("Not Complete",
+                                      "Download not yet complete. Please wait until it's finished.")
+                    return
+
+                # Get the file path
+                save_path = status.save_path
+                if torrent['info']:
+                    name = status.name
+                    full_path = os.path.join(save_path, name)
+
+                    if os.path.exists(full_path):
+                        try:
+                            import subprocess
+                            subprocess.Popen(['xdg-open', full_path])
+                            self.status_var.set(f"Opened: {name}")
+                        except Exception as e:
+                            messagebox.showerror("Error", f"Failed to open file:\n{e}")
+                    else:
+                        messagebox.showerror("File Not Found",
+                                           f"File not found:\n{full_path}")
+                else:
+                    messagebox.showinfo("No Metadata",
+                                      "Torrent metadata not yet available.")
+
     def setup_context_menu(self):
         """Setup right-click context menu for downloads"""
         self.context_menu = tk.Menu(self.root, tearoff=0)
         self.context_menu.add_command(label="▶️ Resume", command=self.resume_selected)
         self.context_menu.add_command(label="⏸️ Pause", command=self.pause_selected)
         self.context_menu.add_separator()
+        self.context_menu.add_command(label="📂 Open File", command=self.open_file)
         self.context_menu.add_command(label="📁 Open Folder", command=self.open_folder)
         self.context_menu.add_command(label="📋 Copy Magnet Link", command=self.copy_magnet)
         self.context_menu.add_separator()
@@ -1754,7 +1917,7 @@ class SecureTorrentGUI:
                         name, size, progress, speed, eta, peers, status
                     ), tags=(status_tag,))
 
-                # Update total session bandwidth
+                # Update total session bandwidth and statistics
                 try:
                     status = self.ses.status()
                     total_download = status.download_rate / 1000  # Convert to KB/s
@@ -1770,7 +1933,17 @@ class SecureTorrentGUI:
                         ul_limit = self.max_upload_rate / 1000
                         ul_limit_text = f" / {ul_limit:.0f}"
 
-                    bandwidth_text = f"Bandwidth: ↓ {total_download:.0f}{dl_limit_text} KB/s  ↑ {total_upload:.0f}{ul_limit_text} KB/s"
+                    # Session statistics
+                    total_down = format_size(status.total_download)
+                    total_up = format_size(status.total_upload)
+
+                    # Calculate ratio
+                    if status.total_download > 0:
+                        ratio = status.total_upload / status.total_download
+                    else:
+                        ratio = 0.0
+
+                    bandwidth_text = f"Speed: ↓ {total_download:.0f}{dl_limit_text} KB/s  ↑ {total_upload:.0f}{ul_limit_text} KB/s  |  Session: ↓ {total_down}  ↑ {total_up}  Ratio: {ratio:.2f}"
                     self.bandwidth_var.set(bandwidth_text)
                 except Exception as bw_error:
                     pass  # Silently ignore bandwidth update errors

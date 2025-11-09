@@ -785,8 +785,8 @@ class SecureTorrentGUI:
         settings['max_peerlist_size'] = 1000       # Limit peer list size
 
         # Rate-based unchoking for smoother bandwidth usage
-        settings['seed_choking_algorithm'] = lt.seed_choking_algorithm.fastest_upload
-        settings['choking_algorithm'] = lt.choking_algorithm.rate_based
+        settings['seed_choking_algorithm'] = lt.seed_choking_algorithm_t.fastest_upload
+        settings['choking_algorithm'] = lt.choking_algorithm_t.rate_based_choker
 
         # Privacy: Enable encryption
         if self.encryption_enabled:

@@ -1597,9 +1597,19 @@ class SecureTorrentGUI:
             if item:
                 self.tree.selection_set(item)
                 self.context_menu.post(event.x_root, event.y_root)
+            else:
+                # Clicked on empty area, don't show menu
+                return
+
+        def hide_context_menu(event):
+            """Hide context menu when clicking elsewhere"""
+            self.context_menu.unpost()
 
         # Bind right-click to show context menu
         self.tree.bind('<Button-3>', show_context_menu)
+
+        # Bind left-click to hide context menu if it's visible
+        self.root.bind('<Button-1>', lambda e: self.context_menu.unpost(), add='+')
 
     def copy_magnet(self):
         """Copy magnet link to clipboard"""

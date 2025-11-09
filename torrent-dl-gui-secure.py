@@ -194,6 +194,7 @@ class SecureTorrentGUI:
                         '?',
                         '0%',
                         '0 KB/s',
+                        '-',
                         '0',
                         'Checking files'
                     ))
@@ -426,6 +427,64 @@ class SecureTorrentGUI:
 
         # Apply initial theme
         self.apply_theme()
+
+        # Setup keyboard shortcuts
+        self.setup_keyboard_shortcuts()
+
+    def setup_keyboard_shortcuts(self):
+        """Setup keyboard shortcuts"""
+        # Global shortcuts
+        self.root.bind('<Control-o>', lambda e: self.browse_torrent())
+        self.root.bind('<Control-m>', lambda e: self.focus_magnet_entry())
+        self.root.bind('<Control-s>', lambda e: self.apply_limits())
+        self.root.bind('<Control-q>', lambda e: self.on_closing())
+
+        # Downloads tab shortcuts (when downloads tab is active)
+        self.root.bind('<Delete>', lambda e: self.handle_delete_key())
+        self.root.bind('<space>', lambda e: self.toggle_pause())
+        self.root.bind('<Control-p>', lambda e: self.pause_selected())
+        self.root.bind('<Control-r>', lambda e: self.resume_selected())
+        self.root.bind('<Control-a>', lambda e: self.select_all_torrents())
+        self.root.bind('<Control-f>', lambda e: self.open_folder())
+
+    def focus_magnet_entry(self):
+        """Focus magnet link entry and switch to downloads tab"""
+        self.notebook.select(self.downloads_tab)
+        self.magnet_entry.focus()
+
+    def handle_delete_key(self):
+        """Handle delete key press"""
+        # Only remove if downloads tab is active and something is selected
+        if self.notebook.select() == str(self.downloads_tab):
+            if self.tree.selection():
+                self.remove_selected()
+
+    def toggle_pause(self):
+        """Toggle pause/resume for selected torrent"""
+        # Only toggle if downloads tab is active and something is selected
+        if self.notebook.select() != str(self.downloads_tab):
+            return
+
+        selection = self.tree.selection()
+        if not selection:
+            return
+
+        with self.torrents_lock:
+            torrent = self.get_torrent_by_item_id(selection[0])
+            if torrent:
+                handle = torrent['handle']
+                if handle.status().paused:
+                    handle.resume()
+                    self.status_var.set("Resumed")
+                else:
+                    handle.pause()
+                    self.status_var.set("Paused")
+
+    def select_all_torrents(self):
+        """Select all torrents in downloads list"""
+        if self.notebook.select() == str(self.downloads_tab):
+            items = self.tree.get_children()
+            self.tree.selection_set(items)
 
     def setup_privacy_tab(self):
         """Setup privacy and security tab"""
@@ -673,18 +732,19 @@ class SecureTorrentGUI:
         downloads_frame.columnconfigure(0, weight=1)
         downloads_frame.rowconfigure(0, weight=1)
 
-        columns = ('Name', 'Size', 'Progress', 'Speed', 'Peers', 'Status')
+        columns = ('Name', 'Size', 'Progress', 'Speed', 'ETA', 'Peers', 'Status')
         self.tree = ttk.Treeview(downloads_frame, columns=columns, show='headings', height=12)
 
         for col in columns:
             self.tree.heading(col, text=col)
 
-        self.tree.column('Name', width=300)
+        self.tree.column('Name', width=250)
         self.tree.column('Size', width=80)
         self.tree.column('Progress', width=80)
         self.tree.column('Speed', width=100)
+        self.tree.column('ETA', width=80)
         self.tree.column('Peers', width=60)
-        self.tree.column('Status', width=100)
+        self.tree.column('Status', width=120)
 
         scrollbar = ttk.Scrollbar(downloads_frame, orient=tk.VERTICAL, command=self.tree.yview)
         self.tree.configure(yscrollcommand=scrollbar.set)
@@ -692,9 +752,25 @@ class SecureTorrentGUI:
         self.tree.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
         scrollbar.grid(row=0, column=1, sticky=(tk.N, tk.S))
 
+        # Configure status color tags
+        self.tree.tag_configure('downloading', foreground='#2196F3')  # Blue
+        self.tree.tag_configure('seeding', foreground='#4CAF50')       # Green
+        self.tree.tag_configure('paused', foreground='#9E9E9E')        # Gray
+        self.tree.tag_configure('checking', foreground='#FF9800')      # Orange
+        self.tree.tag_configure('queued', foreground='#757575')        # Dark Gray
+
+        # Setup right-click context menu
+        self.setup_context_menu()
+
         control_frame = ttk.Frame(downloads_frame)
         control_frame.grid(row=1, column=0, columnspan=2, pady=(10, 0))
 
+        ttk.Button(control_frame, text="⏸️ Pause",
+                  command=self.pause_selected).pack(side=tk.LEFT, padx=5)
+        ttk.Button(control_frame, text="▶️ Resume",
+                  command=self.resume_selected).pack(side=tk.LEFT, padx=5)
+        ttk.Button(control_frame, text="📁 Open Folder",
+                  command=self.open_folder).pack(side=tk.LEFT, padx=5)
         ttk.Button(control_frame, text="Remove Selected",
                   command=self.remove_selected).pack(side=tk.LEFT, padx=5)
         ttk.Button(control_frame, text="Clear Completed",
@@ -1060,6 +1136,7 @@ class SecureTorrentGUI:
                 format_size(info.total_size()),
                 '0%',
                 '0 KB/s',
+                '-',
                 '0',
                 'Checking...'
             ))
@@ -1191,6 +1268,7 @@ class SecureTorrentGUI:
                 '?',
                 '0%',
                 '0 KB/s',
+                '-',
                 '0',
                 initial_status
             ))
@@ -1415,6 +1493,137 @@ class SecureTorrentGUI:
         except Exception as e:
             print(f"Warning: Could not delete resume files for {info_hash}: {e}")
 
+    def get_torrent_by_item_id(self, item_id):
+        """Get torrent dict by tree item ID (must be called with lock held)"""
+        for torrent in self.torrents:
+            if torrent['item_id'] == item_id:
+                return torrent
+        return None
+
+    def pause_selected(self):
+        """Pause selected torrent"""
+        selection = self.tree.selection()
+        if not selection:
+            messagebox.showwarning("Warning", "Please select a torrent to pause")
+            return
+
+        paused_count = 0
+        with self.torrents_lock:
+            for item_id in selection:
+                torrent = self.get_torrent_by_item_id(item_id)
+                if torrent:
+                    handle = torrent['handle']
+                    if not handle.status().paused:
+                        handle.pause()
+                        paused_count += 1
+
+        if paused_count > 0:
+            self.status_var.set(f"Paused {paused_count} torrent(s)")
+        else:
+            self.status_var.set("Selected torrent(s) already paused")
+
+    def resume_selected(self):
+        """Resume selected torrent"""
+        selection = self.tree.selection()
+        if not selection:
+            messagebox.showwarning("Warning", "Please select a torrent to resume")
+            return
+
+        resumed_count = 0
+        with self.torrents_lock:
+            for item_id in selection:
+                torrent = self.get_torrent_by_item_id(item_id)
+                if torrent:
+                    handle = torrent['handle']
+                    if handle.status().paused:
+                        handle.resume()
+                        resumed_count += 1
+
+        if resumed_count > 0:
+            self.status_var.set(f"Resumed {resumed_count} torrent(s)")
+        else:
+            self.status_var.set("Selected torrent(s) already active")
+
+    def open_folder(self):
+        """Open download folder for selected torrent"""
+        selection = self.tree.selection()
+        if not selection:
+            messagebox.showwarning("Warning", "Please select a torrent")
+            return
+
+        with self.torrents_lock:
+            torrent = self.get_torrent_by_item_id(selection[0])
+            if torrent:
+                handle = torrent['handle']
+                status = handle.status()
+
+                # Get the folder path
+                folder_path = status.save_path
+
+                # If torrent has metadata, check if it's a folder or file
+                if torrent['info']:
+                    name = status.name
+                    full_path = os.path.join(folder_path, name)
+
+                    # If it's a directory, open it directly
+                    if os.path.isdir(full_path):
+                        folder_path = full_path
+                    # If it's a file, open its parent directory
+                    elif os.path.isfile(full_path):
+                        folder_path = os.path.dirname(full_path)
+
+                # Open the folder
+                try:
+                    import subprocess
+                    subprocess.Popen(['xdg-open', folder_path])
+                    self.status_var.set(f"Opened folder: {folder_path}")
+                except Exception as e:
+                    messagebox.showerror("Error", f"Failed to open folder:\n{e}")
+
+    def setup_context_menu(self):
+        """Setup right-click context menu for downloads"""
+        self.context_menu = tk.Menu(self.root, tearoff=0)
+        self.context_menu.add_command(label="▶️ Resume", command=self.resume_selected)
+        self.context_menu.add_command(label="⏸️ Pause", command=self.pause_selected)
+        self.context_menu.add_separator()
+        self.context_menu.add_command(label="📁 Open Folder", command=self.open_folder)
+        self.context_menu.add_command(label="📋 Copy Magnet Link", command=self.copy_magnet)
+        self.context_menu.add_separator()
+        self.context_menu.add_command(label="🗑️ Remove", command=self.remove_selected)
+
+        def show_context_menu(event):
+            # Select the item under cursor
+            item = self.tree.identify_row(event.y)
+            if item:
+                self.tree.selection_set(item)
+                self.context_menu.post(event.x_root, event.y_root)
+
+        # Bind right-click to show context menu
+        self.tree.bind('<Button-3>', show_context_menu)
+
+    def copy_magnet(self):
+        """Copy magnet link to clipboard"""
+        selection = self.tree.selection()
+        if not selection:
+            messagebox.showwarning("Warning", "Please select a torrent")
+            return
+
+        with self.torrents_lock:
+            torrent = self.get_torrent_by_item_id(selection[0])
+            if torrent:
+                handle = torrent['handle']
+                if handle.torrent_file():
+                    try:
+                        magnet = lt.make_magnet_uri(handle.torrent_file())
+                        self.root.clipboard_clear()
+                        self.root.clipboard_append(magnet)
+                        self.status_var.set("Magnet link copied to clipboard")
+                    except Exception as e:
+                        messagebox.showerror("Error", f"Failed to copy magnet link:\n{e}")
+                else:
+                    messagebox.showinfo("No Metadata",
+                                      "Torrent metadata not yet available. Please wait for it to download.")
+
     def save_metadata_if_ready(self, torrent):
         """Save torrent metadata to file if it has arrived (for magnet links)"""
         handle = torrent['handle']
@@ -1482,21 +1691,58 @@ class SecureTorrentGUI:
                     speed = f"↓{download_rate:.0f} ↑{upload_rate:.0f} KB/s"
                     peers = str(s.num_peers)
 
-                    if s.is_seeding:
-                        status = "Seeding"
+                    # Calculate ETA
+                    if s.state == lt.torrent_status.downloading and download_rate > 0:
+                        if torrent['info']:
+                            total_size = torrent['info'].total_size()
+                            downloaded = s.total_done
+                            remaining = total_size - downloaded
+                            eta_seconds = remaining / (download_rate * 1000)  # convert KB/s to B/s
+
+                            # Format ETA
+                            if eta_seconds < 60:
+                                eta = f"{int(eta_seconds)}s"
+                            elif eta_seconds < 3600:
+                                eta = f"{int(eta_seconds / 60)}m"
+                            elif eta_seconds < 86400:
+                                hours = int(eta_seconds / 3600)
+                                minutes = int((eta_seconds % 3600) / 60)
+                                eta = f"{hours}h {minutes}m"
+                            else:
+                                days = int(eta_seconds / 86400)
+                                hours = int((eta_seconds % 86400) / 3600)
+                                eta = f"{days}d {hours}h"
+                        else:
+                            eta = "Unknown"
+                    else:
+                        eta = "-"
+
+                    # Determine status with icons and color tags
+                    if s.paused:
+                        status = "⏸️ Paused"
+                        status_tag = "paused"
+                    elif s.is_seeding:
+                        status = "🌱 Seeding"
+                        status_tag = "seeding"
                         if not torrent['completed']:
                             torrent['completed'] = True
                             send_notification("Download Complete", f"{name}")
                     elif s.state == lt.torrent_status.downloading:
-                        status = "Downloading"
+                        status = "⬇️ Downloading"
+                        status_tag = "downloading"
                     elif s.state == lt.torrent_status.checking_files:
-                        status = "Checking"
+                        status = "🔍 Checking"
+                        status_tag = "checking"
+                    elif s.state == lt.torrent_status.queued:
+                        status = "⏳ Queued"
+                        status_tag = "queued"
                     else:
-                        status = "Queued"
+                        status = "❓ Unknown"
+                        status_tag = ""
 
                     self.tree.item(torrent['item_id'], values=(
-                        name, size, progress, speed, peers, status
-                    ))
+                        name, size, progress, speed, eta, peers, status
+                    ), tags=(status_tag,))
 
                 # Update total session bandwidth
                 try:
